@@ -3,8 +3,8 @@
 1 24 "app.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 1,1,0,0
-PRODUCTVERSION 1,1,0,0
+FILEVERSION 1,1,1,0
+PRODUCTVERSION 1,1,1,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -13,9 +13,9 @@ BEGIN
     BLOCK "040904B0"
     BEGIN
       VALUE "FileDescription", "WFC Connector - Nintendo Wi-Fi USB Connector for Windows 11"
-      VALUE "FileVersion", "1.1.0"
+      VALUE "FileVersion", "1.1.1"
       VALUE "ProductName", "WFC Connector"
-      VALUE "ProductVersion", "1.1.0"
+      VALUE "ProductVersion", "1.1.1"
       VALUE "LegalCopyright", "GPL-2.0-or-later. Not affiliated with Nintendo."
       VALUE "OriginalFilename", "WFCConnector.exe"
     END

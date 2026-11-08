@@ -30,8 +30,9 @@ Everything runs in user space in one exe.
   console doesn't acknowledge holds the radio for about 420 ms. Beacons stall and USB writes time out. With
   CWmax 6 it's about 125 ms. All transmits go through a queue thread, so the router never waits on USB.
 - The RX filter keeps control frames so that PS-Poll reaches the AP.
-- The status light is wired to one of the MAC_CSR20 LED lines or GPIO pins. The in-app light finder tests
-  them and saves the one that works.
+- The status light lights when the MAC_CSR20 LED outputs are driven inverted, with link and activity both
+  on (setting 4 in `rt_led_apply`). That's the default. `led=` in `connector.ini` can pick another
+  candidate, or `off`.
 
 ## Diagnostics
 

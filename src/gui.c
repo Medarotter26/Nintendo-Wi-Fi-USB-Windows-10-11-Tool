@@ -5,12 +5,12 @@
 #include <shellapi.h>
 
 enum {
-    ID_STATUS = 100, ID_DETAIL, ID_STARTSTOP, ID_DRIVER, ID_LIGHT, ID_FOLDER,
+    ID_STATUS = 100, ID_DETAIL, ID_STARTSTOP, ID_DRIVER, ID_FOLDER,
     ID_SSID, ID_CHANNEL, ID_DNS, ID_APPROVE, ID_SAVE, ID_CONSOLES, ID_LOG,
     ID_SYS_REMOVE = 0x1100, ID_SYS_ABOUT = 0x1110
 };
 
-static HWND g_wnd, h_status, h_detail, h_startstop, h_driver, h_light, h_folder;
+static HWND g_wnd, h_status, h_detail, h_startstop, h_driver, h_folder;
 static HWND h_ssid, h_channel, h_dns, h_approve, h_save, h_consoles, h_log;
 static HFONT f_normal, f_bold;
 static int g_dpi = 96;
@@ -65,17 +65,13 @@ static void update_ui(void)
     app_status_t s;
     app_get_status(&s);
     static const char *title[] = {"Hotspot off", "Waiting for the connector", "Driver needed", "Starting...",
-                                  "Hotspot on", "Problem", "Finding the light setting"};
+                                  "Hotspot on", "Problem", ""};
     SetWindowTextA(h_status, title[s.state]);
     SetWindowTextA(h_detail, s.message);
 
-    int light = s.state == AS_LIGHT_TEST;
     int on = s.state == AS_RUNNING || s.state == AS_STARTING || s.state == AS_WAIT_DEVICE || s.state == AS_NEED_DRIVER;
-    SetWindowTextA(h_startstop, light ? "Cancel" : on ? "Stop hotspot" : "Start hotspot");
-    SetWindowTextA(h_light, light ? "The light is on!" : "Find light setting...");
+    SetWindowTextA(h_startstop, on ? "Stop hotspot" : "Start hotspot");
     EnableWindow(h_driver, s.state == AS_NEED_DRIVER && !g_driver_busy);
-    EnableWindow(h_light, !g_driver_busy);
-    EnableWindow(h_save, !light);
 
     /* Console list */
     SendMessageA(h_consoles, LB_RESETCONTENT, 0, 0);
@@ -142,8 +138,7 @@ static void on_command(int id)
     app_get_status(&s);
     switch (id) {
     case ID_STARTSTOP:
-        if (s.state == AS_LIGHT_TEST) app_light_cancel();
-        else if (s.state == AS_STOPPED || s.state == AS_ERROR) app_start();
+        if (s.state == AS_STOPPED || s.state == AS_ERROR) app_start();
         else app_stop();
         break;
     case ID_DRIVER:
@@ -154,15 +149,6 @@ static void on_command(int id)
             log_append("The driver was not installed: administrator permission was not given.\n");
         }
         update_ui();
-        break;
-    case ID_LIGHT:
-        if (s.state == AS_LIGHT_TEST) { app_light_seen(); break; }
-        if (MessageBoxA(g_wnd,
-                        "This switches the hotspot off and tries each way of lighting the connector's light, "
-                        "one every 3 seconds.\n\nWatch the connector and click \"The light is on!\" as soon as "
-                        "it lights up.\n\nStart now?",
-                        APP_NAME, MB_OKCANCEL | MB_ICONINFORMATION) == IDOK)
-            app_find_light();
         break;
     case ID_FOLDER:
         ShellExecuteA(g_wnd, "open", g_datadir, NULL, NULL, SW_SHOWNORMAL);
@@ -207,18 +193,6 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_STATUS:
         update_ui();
         return 0;
-    case WM_APP_LIGHT_CONFIRM: {
-        int r = MessageBoxA(h, "Is the connector's light on right now?", APP_NAME,
-                            MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND);
-        app_light_confirm((int)wp, r == IDYES);
-        return 0;
-    }
-    case WM_APP_LIGHT_DONE:
-        MessageBoxA(h, wp ? "Light setting saved. The light now comes on while the hotspot runs."
-                          : "No light setting was saved. You can try again any time.",
-                    APP_NAME, MB_OK | MB_ICONINFORMATION);
-        app_start();
-        return 0;
     case WM_APP_DRIVER_DONE:
         g_driver_busy = 0;
         if (wp == 0) {
@@ -244,7 +218,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             COLORREF c = RGB(60, 60, 60);
             switch (g_last.state) {
             case AS_RUNNING: c = RGB(16, 124, 16); break;
-            case AS_WAIT_DEVICE: case AS_NEED_DRIVER: case AS_STARTING: case AS_LIGHT_TEST: c = RGB(176, 96, 0); break;
+            case AS_WAIT_DEVICE: case AS_NEED_DRIVER: case AS_STARTING: c = RGB(176, 96, 0); break;
             case AS_ERROR: c = RGB(196, 43, 28); break;
             default: break;
             }
@@ -288,8 +262,7 @@ static void build_ui(void)
 
     h_startstop = mk("BUTTON", "Start hotspot", BS_PUSHBUTTON | WS_TABSTOP, 16, 70, 130, 30, ID_STARTSTOP, 0);
     h_driver = mk("BUTTON", "Install driver", BS_PUSHBUTTON | WS_TABSTOP, 154, 70, 130, 30, ID_DRIVER, 0);
-    h_light = mk("BUTTON", "Find light setting...", BS_PUSHBUTTON | WS_TABSTOP, 292, 70, 160, 30, ID_LIGHT, 0);
-    h_folder = mk("BUTTON", "Open data folder", BS_PUSHBUTTON | WS_TABSTOP, 460, 70, 156, 30, ID_FOLDER, 0);
+    h_folder = mk("BUTTON", "Open data folder", BS_PUSHBUTTON | WS_TABSTOP, 292, 70, 156, 30, ID_FOLDER, 0);
 
     mk("BUTTON", "Settings", BS_GROUPBOX, 12, 110, 608, 132, 0, 0);
     mk("STATIC", "Network name:", SS_LEFT, 28, 136, 100, 20, 0, 0);

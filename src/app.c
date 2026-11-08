@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Engine: settings, logging, the hotspot session and the light finder.
+/* Engine: settings, logging and the hotspot session.
  * Runs on a worker thread started by app_init(). */
 #include "app.h"
 #include "rt2570.h"
@@ -13,7 +13,7 @@ char g_datadir[MAX_PATH];
 static char g_ini[MAX_PATH], g_allow[MAX_PATH], g_logpath[MAX_PATH];
 static HWND g_notify;
 static HANDLE g_thread, g_wake_event;
-static volatile LONG g_quit, g_want_run, g_restart, g_want_light, g_light_seen, g_light_cancel;
+static volatile LONG g_quit, g_want_run, g_restart;
 static CRITICAL_SECTION g_lock;          /* g_status and the command fields below */
 static app_status_t g_status;
 static int g_status_dirty;
@@ -22,7 +22,6 @@ static int g_status_dirty;
 static struct { u8 mac[6]; int allow; } g_decisions[8];
 static int g_ndecisions;
 static int g_cfg_changed;
-static int g_light_answer_step, g_light_answer_yes, g_light_answered;
 
 /* ---------------- logging ---------------- */
 
@@ -91,6 +90,7 @@ static void config_defaults(void)
     str_to_ip("178.62.43.212", &g_cfg.dns1);
     g_cfg.net_base = 0xC0A84D00u;              /* 192.168.77.0 */
     g_cfg.tx_power = -1;
+    g_cfg.led = 4;          /* LED outputs link + activity, inverted: lights the connector */
 }
 
 static void config_save(void)
@@ -102,10 +102,13 @@ static void config_save(void)
     ip_to_str(g_cfg.dns2, d2, sizeof(d2));
     if (g_cfg.tx_power < 0) snprintf(pw, sizeof(pw), "auto");
     else snprintf(pw, sizeof(pw), "%d", g_cfg.tx_power);
+    char ledstr[16];
+    if (g_cfg.led < 0) snprintf(ledstr, sizeof(ledstr), "off");
+    else snprintf(ledstr, sizeof(ledstr), "%d", g_cfg.led);
     fprintf(f,
         "; WFC Connector settings. The program window edits these for you.\n"
-        "ssid=%s\nchannel=%d\ndns=%s\ndns2=%s\napprove=%s\ntxpower=%s\nled=%d\n",
-        g_cfg.ssid, g_cfg.channel, d1, d2, g_cfg.approve_all ? "all" : "ask", pw, g_cfg.led);
+        "ssid=%s\nchannel=%d\ndns=%s\ndns2=%s\napprove=%s\ntxpower=%s\nled=%s\n",
+        g_cfg.ssid, g_cfg.channel, d1, d2, g_cfg.approve_all ? "all" : "ask", pw, ledstr);
     fclose(f);
 }
 
@@ -121,6 +124,7 @@ static void config_load(void)
     FILE *f = fopen(g_ini, "r");
     if (!f) { config_save(); return; }
     char line[256];
+    int keys = 0;
     while (fgets(line, sizeof(line), f)) {
         trim(line);
         char *p = line;
@@ -132,6 +136,7 @@ static void config_load(void)
         char *k = p, *v = eq + 1;
         trim(k);
         while (*v == ' ' || *v == '\t') v++;
+        keys++;
         if (!_stricmp(k, "ssid")) { if (*v) snprintf(g_cfg.ssid, sizeof(g_cfg.ssid), "%.32s", v); }
         else if (!_stricmp(k, "channel")) { int c = atoi(v); if (c >= 1 && c <= 13) g_cfg.channel = c; }
         else if (!_stricmp(k, "dns") || !_stricmp(k, "dns1")) str_to_ip(v, &g_cfg.dns1);
@@ -140,9 +145,14 @@ static void config_load(void)
         else if (!_stricmp(k, "txpower")) {
             g_cfg.tx_power = (!_stricmp(v, "auto") || !*v) ? -1 : atoi(v);
             if (g_cfg.tx_power > 31) g_cfg.tx_power = 31;
-        } else if (!_stricmp(k, "led")) g_cfg.led = atoi(v);
+        } else if (!_stricmp(k, "led")) {
+            /* "off" keeps the light dark; 0 (written by 1.1.0) means the default. */
+            if (!_stricmp(v, "off")) g_cfg.led = -1;
+            else if (atoi(v) > 0) g_cfg.led = atoi(v);
+        }
     }
     fclose(f);
+    if (!keys) config_save();          /* new or empty file: write the defaults */
 }
 
 /* Settings next to the exe if that folder is writable, else in LocalAppData. */
@@ -426,80 +436,12 @@ static void run_session(void)
     }
 }
 
-/* ---------------- light finder ---------------- */
-
-static void run_light_test(void)
-{
-    set_state(AS_LIGHT_TEST, "Opening the connector...");
-    post_status_if_dirty();
-    char err[512];
-    g_usb_dead = 0;
-    if (rt_init(&g_rt, err, sizeof(err)) != 0 || rt_start_ap(&g_rt, g_cfg.channel, g_cfg.tx_power) != 0) {
-        LOG("Light finder: %s\n", err[0] ? err : "the connector did not respond");
-        if (g_rt.usb.open) rt_stop(&g_rt);
-        if (g_notify) PostMessageA(g_notify, WM_APP_LIGHT_DONE, 0, 0);
-        return;
-    }
-    int n = rt_led_count(), found = 0;
-    g_light_seen = 0;
-    g_light_cancel = 0;
-    for (int i = 1; i <= n && !found && !g_light_cancel && !g_quit; i++) {
-        char d[64];
-        rt_led_desc(i, d, sizeof(d));
-        EnterCriticalSection(&g_lock);
-        g_status.light_step = i;
-        g_status.light_total = n;
-        snprintf(g_status.light_desc, sizeof(g_status.light_desc), "%s", d);
-        LeaveCriticalSection(&g_lock);
-        set_state(AS_LIGHT_TEST, "Watch the connector's light. Trying %d of %d...", i, n);
-        post_status_if_dirty();
-        rt_led_apply(&g_rt, i);
-        for (int w = 0; w < 30 && !g_light_seen && !g_light_cancel && !g_quit; w++) Sleep(100);
-        if (g_light_seen) found = i;
-        rt_led_apply(&g_rt, 0);
-    }
-    int pick = 0;
-    /* The click may lag a step behind the light: confirm this step, then the one before. */
-    for (int i = found; found && i >= 1 && i >= found - 1 && !pick && !g_light_cancel && !g_quit; i--) {
-        rt_led_apply(&g_rt, i);
-        EnterCriticalSection(&g_lock);
-        g_light_answered = 0;
-        LeaveCriticalSection(&g_lock);
-        PostMessageA(g_notify, WM_APP_LIGHT_CONFIRM, (WPARAM)i, 0);
-        for (;;) {
-            WaitForSingleObject(g_wake_event, 200);
-            EnterCriticalSection(&g_lock);
-            int a = g_light_answered && g_light_answer_step == i, yes = g_light_answer_yes;
-            LeaveCriticalSection(&g_lock);
-            if (a) { if (yes) pick = i; break; }
-            if (g_light_cancel || g_quit) break;
-        }
-        rt_led_apply(&g_rt, 0);
-    }
-    if (pick) {
-        g_cfg.led = pick;
-        config_save();
-        char d[64];
-        rt_led_desc(pick, d, sizeof(d));
-        LOG("Light setting saved: %s.\n", d);
-    } else {
-        LOG("Light finder ended without a setting.\n");
-    }
-    rt_stop(&g_rt);
-    if (g_notify) PostMessageA(g_notify, WM_APP_LIGHT_DONE, (WPARAM)pick, 0);
-}
-
 /* ---------------- worker thread ---------------- */
 
 static DWORD WINAPI worker_main(LPVOID arg)
 {
     (void)arg;
     while (!g_quit) {
-        if (g_want_light) {
-            InterlockedExchange(&g_want_light, 0);
-            run_light_test();
-            continue;
-        }
         if (g_want_run) {
             InterlockedExchange(&g_restart, 0);
             run_session();
@@ -537,7 +479,6 @@ void app_init(HWND notify)
 void app_shutdown(void)
 {
     InterlockedExchange(&g_quit, 1);
-    InterlockedExchange(&g_light_cancel, 1);
     wake_worker();
     if (g_thread) {
         WaitForSingleObject(g_thread, 5000);
@@ -584,26 +525,6 @@ void app_apply_settings(const char *ssid, int channel, u32 dns, int approve_all)
         LOG("Restarting the hotspot with the new name/channel...\n");
         InterlockedExchange(&g_restart, 1);
     }
-    wake_worker();
-}
-
-void app_find_light(void)
-{
-    InterlockedExchange(&g_want_run, 0);
-    InterlockedExchange(&g_want_light, 1);
-    wake_worker();
-}
-
-void app_light_seen(void) { InterlockedExchange(&g_light_seen, 1); }
-void app_light_cancel(void) { InterlockedExchange(&g_light_cancel, 1); wake_worker(); }
-
-void app_light_confirm(int step, int yes)
-{
-    EnterCriticalSection(&g_lock);
-    g_light_answer_step = step;
-    g_light_answer_yes = yes;
-    g_light_answered = 1;
-    LeaveCriticalSection(&g_lock);
     wake_worker();
 }
 

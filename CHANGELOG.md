@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1
+
+- The connector's light now turns on by itself while the hotspot runs. The "Find light setting" button is gone.
+  To keep the light off, put `led=off` in `connector.ini`.
+
 ## 1.1.0
 
 - One program with a window. It includes the driver installer, the settings, console approval, the light
