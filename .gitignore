@@ -1,0 +1,6 @@
+build/
+*.o
+*.exe
+connector.ini
+connector-log*.txt
+allowed_consoles.txt
